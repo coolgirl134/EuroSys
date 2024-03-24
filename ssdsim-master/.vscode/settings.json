@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "ssd.h": "c",
+        "string.h": "c",
+        "pagemap.h": "c",
+        "flash.h": "c"
+    }
+}
