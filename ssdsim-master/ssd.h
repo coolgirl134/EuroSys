@@ -22,6 +22,7 @@ void main();
 struct ssd_info *simulate(struct ssd_info *);
 int get_requests(struct ssd_info *);
 struct ssd_info *buffer_management(struct ssd_info *);
+struct ssd_info *buffer_management_new(struct ssd_info *);
 unsigned int lpn2ppn(struct ssd_info * ,unsigned int lsn);
 struct ssd_info *distribute(struct ssd_info *);
 void trace_output(struct ssd_info* );

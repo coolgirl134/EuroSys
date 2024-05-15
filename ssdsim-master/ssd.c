@@ -53,6 +53,10 @@ void main()
 
 	ssd=initiation(ssd);
 	make_aged(ssd);
+	intialize_list(ssd);
+	if(NONE_list == NULL){
+		printf("NONE_list is NULL\n");
+	}
 	pre_process_page(ssd);
 
 	for (i=0;i<ssd->parameter->channel_number;i++)
@@ -115,16 +119,19 @@ struct ssd_info *simulate(struct ssd_info *ssd)
 
 		if(flag == 1)
 		{   
-			//printf("once\n");
-			if (ssd->parameter->dram_capacity!=0)
-			{
-				buffer_management(ssd);  
-				distribute(ssd); 
-			} 
-			else
-			{
-				no_buffer_distribute(ssd);
-			}		
+			buffer_management_new(ssd);
+			distribute(ssd);
+
+
+			// if (ssd->parameter->dram_capacity!=0)
+			// {
+			// 	buffer_management(ssd);  
+			// 	distribute(ssd); 
+			// } 
+			// else
+			// {
+			// 	no_buffer_distribute(ssd);
+			// }		
 		}
 
 		process(ssd);    
@@ -284,14 +291,307 @@ int get_requests(struct ssd_info *ssd)
 	}
 
 	
+	// ftell函数用来获取当前文件的读写位置，并将该值传给filepoint变量
 	filepoint = ftell(ssd->tracefile);	
-	fgets(buffer, 200, ssd->tracefile);    //寻找下一条请求的到达时间
+	// fgets函数用来从ssd->tracefile文件中读取200字节的数据到buffer中
+	fgets(buffer, 200, ssd->tracefile);    //寻找下一条请求的到达时间，但貌似没有用到
 	sscanf(buffer,"%I64u %d %d %d %d",&time_t,&device,&lsn,&size,&ope);
+	// 这里还存储了ssd下一个请求的时间，没有用到
 	ssd->next_request_time=time_t;
+	// 把ssd->tracefile文件读写位置指针从文件0偏移量处后移filepoint个字节
 	fseek(ssd->tracefile,filepoint,0);
 
 	return 1;
 }
+
+/**********************************************************************************************************************************************
+*首先buffer是个写buffer，就是为写请求服务的，因为读flash的时间tR为20us，写flash的时间tprog为200us，所以为写服务更能节省时间
+*在buffer表中记录每个lpa的read/program count，当其刷新回flash中时，count置0
+*  读操作：如果命中了buffer，从buffer读，不占用channel的I/O总线，没有命中buffer，从flash读，占用channel的I/O总线，并且把数据读出存放到buffer中
+*  写操作：  当接收到写请求时，直接写入到缓存中，然后根据每次被访问的次数将其lpa插入到不同热度的链表中，插入到该链表的前提也是被update
+
+*	写请求需要注意的是：如果执行写操作的地址已经有数据，则需要判断它的read_count和prog_count，异地更新到对应类型的page中
+*	读请求需要注意的是每次执行完需要当前page的read_count++
+***********************************************************************************************************************************************/
+struct ssd_info *buffer_management_new(struct ssd_info *ssd){
+	unsigned int j,lsn,lpn,last_lpn,first_lpn,index,complete_flag=0, state,full_page;
+	unsigned int flag=0,need_distb_flag,lsn_flag,flag1=1,active_region_flag=0;           
+	struct request *new_request;
+	struct buffer_group *buffer_node,key;
+	unsigned int mask=0,offset1=0,offset2=0;
+
+	#ifdef DEBUG
+	printf("enter buffer_management,  current time:%I64u\n",ssd->current_time);
+	#endif
+	ssd->dram->current_time=ssd->current_time;
+	full_page=~(0xffffffff<<ssd->parameter->subpage_page);
+	
+	new_request=ssd->request_tail;
+	lsn=new_request->lsn;
+	lpn=new_request->lsn/ssd->parameter->subpage_page;
+	last_lpn=(new_request->lsn+new_request->size-1)/ssd->parameter->subpage_page;
+	first_lpn=new_request->lsn/ssd->parameter->subpage_page;
+
+	new_request->need_distr_flag=(unsigned int*)malloc(sizeof(unsigned int)*((last_lpn-first_lpn+1)*ssd->parameter->subpage_page/32+1));
+	alloc_assert(new_request->need_distr_flag,"new_request->need_distr_flag");
+	memset(new_request->need_distr_flag, 0, sizeof(unsigned int)*((last_lpn-first_lpn+1)*ssd->parameter->subpage_page/32+1));
+
+	if(new_request->operation == WRITE){
+		while(lpn <= last_lpn){
+			// 初始化四个扇区都需要进行分发
+			need_distb_flag=full_page;
+			mask=~(0xffffffff<<(ssd->parameter->subpage_page));
+			// 初始化4个扇区都有效
+			state=mask;
+
+			// 更新扇区有效状态
+			if(lpn==first_lpn)
+			{
+				offset1=ssd->parameter->subpage_page-((lpn+1)*ssd->parameter->subpage_page-new_request->lsn);
+				state=state&(0xffffffff<<offset1);
+			}
+			if(lpn==last_lpn)
+			{
+				offset2=ssd->parameter->subpage_page-((lpn+1)*ssd->parameter->subpage_page-(new_request->lsn+new_request->size));
+				state=state&(~(0xffffffff<<offset2));
+			}
+			// 把当前子请求加入到buffer中，如果buffeer满，则将buffer_tail的子请求插入到req->sub中，等待写回
+			ssd=insert2buffer(ssd, lpn, state,NULL,new_request);
+			lpn++;
+
+		}
+	}else if(new_request->operation == READ){
+		while(lpn <= last_lpn){
+			/************************************************************************************************
+			 *need_distb_flag表示是否需要执行distribution函数，1表示需要执行，buffer中没有，0表示不需要执行
+             *即1表示需要分发，0表示不需要分发，对应点初始全部赋为1
+			*************************************************************************************************/
+			need_distb_flag=full_page;   
+			key.group=lpn;
+			buffer_node= (struct buffer_group*)avlTreeFind(ssd->dram->buffer, (TREE_NODE *)&key);
+			int update = 0;
+			while((buffer_node!=NULL)&&(lsn<(lpn+1)*ssd->parameter->subpage_page)&&(lsn<=(new_request->lsn+new_request->size-1)))             			
+			{        
+				// 增加当前lpn被读的次数,这个读次数是根据记录每个扇区的读次数
+				if(update == 0){
+					buffer_node->read_count++;  
+				}
+				   	
+				lsn_flag=full_page;
+				mask=1 << (lsn%ssd->parameter->subpage_page);
+				// 32是因为twoplane操作吗，一次两页处理，对于need_distb_flag是两页并在一起进行标记是否需要进行分发
+				if(mask>31)
+				{
+					printf("the subpage number is larger than 32!add some cases");
+					getchar(); 		   
+				}
+				else if((buffer_node->stored & mask)==mask)
+				{
+					// flag为1表示当前读操作请求的数据都在buffer中，无需从flash执行操作
+					flag=1;
+					lsn_flag=lsn_flag&(~mask);
+				}
+
+				if(flag==1)				
+				{	
+					
+					//如果该buffer节点不在buffer的队首，需要将这个节点提到队首，实现了LRU算法，这个是一个双向队列。		       		
+					if(ssd->dram->buffer->buffer_head!=buffer_node)     
+					{		
+						if(ssd->dram->buffer->buffer_tail==buffer_node)								
+						{			
+							buffer_node->LRU_link_pre->LRU_link_next=NULL;					
+							ssd->dram->buffer->buffer_tail=buffer_node->LRU_link_pre;							
+						}				
+						else								
+						{				
+							buffer_node->LRU_link_pre->LRU_link_next=buffer_node->LRU_link_next;				
+							buffer_node->LRU_link_next->LRU_link_pre=buffer_node->LRU_link_pre;								
+						}								
+						buffer_node->LRU_link_next=ssd->dram->buffer->buffer_head;
+						ssd->dram->buffer->buffer_head->LRU_link_pre=buffer_node;
+						buffer_node->LRU_link_pre=NULL;			
+						ssd->dram->buffer->buffer_head=buffer_node;													
+					}						
+					ssd->dram->buffer->read_hit++;					
+					new_request->complete_lsn_count++;											
+				}		
+				else if(flag==0)
+					{
+						ssd->dram->buffer->read_miss_hit++;
+					}
+
+				need_distb_flag=need_distb_flag&lsn_flag;
+				
+				flag=0;		
+				lsn++;						
+			}	
+			// 如果buffer_node为空，表示缓存中没有请求的lpn，则需要直接从flash进行读取，则执行分发，它这里没有把数据从flash中读取到buffer中
+			index=(lpn-first_lpn)/(32/ssd->parameter->subpage_page); 			
+			new_request->need_distr_flag[index]=new_request->need_distr_flag[index]|(need_distb_flag<<(((lpn-first_lpn)%(32/ssd->parameter->subpage_page))*ssd->parameter->subpage_page));	
+			lpn++;
+		}
+	}
+	complete_flag = 1;
+	for(j=0;j<=(last_lpn-first_lpn+1)*ssd->parameter->subpage_page/32;j++)
+	{
+		if(new_request->need_distr_flag[j] != 0)
+		{
+			complete_flag = 0;
+			break;
+		}
+	}
+
+	/*************************************************************
+	*如果请求已经被全部由buffer服务，该请求可以被直接响应，输出结果
+	*这里假设dram的服务时间为1000ns
+	**************************************************************/
+	if((complete_flag == 1)&&(new_request->subs==NULL))               
+	{
+		new_request->begin_time=ssd->current_time;
+		new_request->response_time=ssd->current_time+1000;            
+	}
+
+	return ssd;
+
+}
+
+
+
+
+// struct ssd_info *buffer_management_new(struct ssd_info *ssd){
+// 	unsigned int j,lsn,lpn,last_lpn,first_lpn,index,complete_flag=0, state,full_page;
+// 	unsigned int flag=0,need_distb_flag,lsn_flag,flag1=1,active_region_flag=0;           
+// 	struct request *new_request;
+// 	struct buffer_group *buffer_node,key;
+// 	unsigned int mask=0,offset1=0,offset2=0;
+
+// 	#ifdef DEBUG
+// 	printf("enter buffer_management,  current time:%I64u\n",ssd->current_time);
+// 	#endif
+// 	ssd->dram->current_time=ssd->current_time;
+// 	full_page=~(0xffffffff<<ssd->parameter->subpage_page);
+	
+// 	new_request=ssd->request_tail;
+// 	lsn=new_request->lsn;
+// 	lpn=new_request->lsn/ssd->parameter->subpage_page;
+// 	last_lpn=(new_request->lsn+new_request->size-1)/ssd->parameter->subpage_page;
+// 	first_lpn=new_request->lsn/ssd->parameter->subpage_page;
+
+// 	new_request->need_distr_flag=(unsigned int*)malloc(sizeof(unsigned int)*((last_lpn-first_lpn+1)*ssd->parameter->subpage_page/32+1));
+// 	alloc_assert(new_request->need_distr_flag,"new_request->need_distr_flag");
+// 	memset(new_request->need_distr_flag, 0, sizeof(unsigned int)*((last_lpn-first_lpn+1)*ssd->parameter->subpage_page/32+1));
+
+// 	if(new_request->operation == WRITE){
+// 		while(lpn <= last_lpn){
+// 			// 初始化四个扇区都需要进行分发
+// 			need_distb_flag=full_page;
+// 			mask=~(0xffffffff<<(ssd->parameter->subpage_page));
+// 			// 初始化4个扇区都有效
+// 			state=mask;
+
+// 			// 更新扇区有效状态
+// 			if(lpn==first_lpn)
+// 			{
+// 				offset1=ssd->parameter->subpage_page-((lpn+1)*ssd->parameter->subpage_page-new_request->lsn);
+// 				state=state&(0xffffffff<<offset1);
+// 			}
+// 			if(lpn==last_lpn)
+// 			{
+// 				offset2=ssd->parameter->subpage_page-((lpn+1)*ssd->parameter->subpage_page-(new_request->lsn+new_request->size));
+// 				state=state&(~(0xffffffff<<offset2));
+// 			}
+// 			// 把当前子请求加入到buffer中，如果buffeer满，则将buffer_tail的子请求插入到req->sub中，等待写回
+// 			ssd=insert2buffer(ssd, lpn, state,NULL,new_request);
+// 			lpn++;
+
+// 		}
+// 	}else if(new_request->operation == READ){
+// 		while(lpn <= last_lpn){
+// 			/************************************************************************************************
+// 			 *need_distb_flag表示是否需要执行distribution函数，1表示需要执行，buffer中没有，0表示不需要执行
+//              *即1表示需要分发，0表示不需要分发，对应点初始全部赋为1
+// 			*************************************************************************************************/
+// 			need_distb_flag=full_page;   
+// 			key.group=lpn;
+// 			buffer_node= (struct buffer_group*)avlTreeFind(ssd->dram->buffer, (TREE_NODE *)&key);
+// 			while((buffer_node!=NULL)&&(lsn<(lpn+1)*ssd->parameter->subpage_page)&&(lsn<=(new_request->lsn+new_request->size-1)))             			
+// 			{             	
+// 				lsn_flag=full_page;
+// 				mask=1 << (lsn%ssd->parameter->subpage_page);
+// 				// 32是因为twoplane操作吗，一次两页处理，对于need_distb_flag是两页并在一起进行标记是否需要进行分发
+// 				if(mask>31)
+// 				{
+// 					printf("the subpage number is larger than 32!add some cases");
+// 					getchar(); 		   
+// 				}
+// 				else if((buffer_node->stored & mask)==mask)
+// 				{
+// 					flag=1;
+// 					lsn_flag=lsn_flag&(~mask);
+// 				}
+
+// 				if(flag==1)				
+// 				{	//如果该buffer节点不在buffer的队首，需要将这个节点提到队首，实现了LRU算法，这个是一个双向队列。		       		
+// 					if(ssd->dram->buffer->buffer_head!=buffer_node)     
+// 					{		
+// 						if(ssd->dram->buffer->buffer_tail==buffer_node)								
+// 						{			
+// 							buffer_node->LRU_link_pre->LRU_link_next=NULL;					
+// 							ssd->dram->buffer->buffer_tail=buffer_node->LRU_link_pre;							
+// 						}				
+// 						else								
+// 						{				
+// 							buffer_node->LRU_link_pre->LRU_link_next=buffer_node->LRU_link_next;				
+// 							buffer_node->LRU_link_next->LRU_link_pre=buffer_node->LRU_link_pre;								
+// 						}								
+// 						buffer_node->LRU_link_next=ssd->dram->buffer->buffer_head;
+// 						ssd->dram->buffer->buffer_head->LRU_link_pre=buffer_node;
+// 						buffer_node->LRU_link_pre=NULL;			
+// 						ssd->dram->buffer->buffer_head=buffer_node;													
+// 					}						
+// 					ssd->dram->buffer->read_hit++;					
+// 					new_request->complete_lsn_count++;											
+// 				}		
+// 				else if(flag==0)
+// 					{
+// 						ssd->dram->buffer->read_miss_hit++;
+// 					}
+
+// 				need_distb_flag=need_distb_flag&lsn_flag;
+				
+// 				flag=0;		
+// 				lsn++;						
+// 			}	
+
+// 			index=(lpn-first_lpn)/(32/ssd->parameter->subpage_page); 			
+// 			new_request->need_distr_flag[index]=new_request->need_distr_flag[index]|(need_distb_flag<<(((lpn-first_lpn)%(32/ssd->parameter->subpage_page))*ssd->parameter->subpage_page));	
+// 			lpn++;
+// 		}
+// 	}
+// 	complete_flag = 1;
+// 	for(j=0;j<=(last_lpn-first_lpn+1)*ssd->parameter->subpage_page/32;j++)
+// 	{
+// 		if(new_request->need_distr_flag[j] != 0)
+// 		{
+// 			complete_flag = 0;
+// 			break;
+// 		}
+// 	}
+
+// 	/*************************************************************
+// 	*如果请求已经被全部由buffer服务，该请求可以被直接响应，输出结果
+// 	*这里假设dram的服务时间为1000ns
+// 	**************************************************************/
+// 	if((complete_flag == 1)&&(new_request->subs==NULL))               
+// 	{
+// 		new_request->begin_time=ssd->current_time;
+// 		new_request->response_time=ssd->current_time+1000;            
+// 	}
+
+// 	return ssd;
+
+// }
 
 /**********************************************************************************************************************************************
 *首先buffer是个写buffer，就是为写请求服务的，因为读flash的时间tR为20us，写flash的时间tprog为200us，所以为写服务更能节省时间
@@ -487,9 +787,10 @@ struct ssd_info *distribute(struct ssd_info *ssd)
 
 	if(req != NULL)
 	{
+		// 这个成员变量没有被用到，一直是0
 		if(req->distri_flag == 0)
 		{
-			//如果还有一些读请求需要处理
+			//如果读操作请求的数据不全在缓存中，即还有部分请求数据未命中
 			if(req->complete_lsn_count != ssd->request_tail->size)
 			{		
 				first_lsn = req->lsn;				
@@ -499,7 +800,7 @@ struct ssd_info *distribute(struct ssd_info *ssd)
 				end = (last_lsn/ssd->parameter->subpage_page + 1) * ssd->parameter->subpage_page;
 				i = (end - start)/32;	
 			
-		
+				// 遍历所有以page为单位的读请求，一个循环处理八页
 				while(i >= 0)
 				{	
 					/*************************************************************************************
@@ -507,13 +808,16 @@ struct ssd_info *distribute(struct ssd_info *ssd)
 					*这里的每一页的状态都存放在了 req->need_distr_flag中，也就是complt中，通过比较complt的
 					*每一项与full_page，就可以知道，这一页是否处理完成。如果没处理完成则通过creat_sub_request
 					函数创建子请求。
+					*因此一个32位的整形数据表示8个完整的页
 					*************************************************************************************/
 					for(j=0; j<32/ssd->parameter->subpage_page; j++)
 					{	
+						// 计算第j页需要读哪几个扇区
 						k = (complt[((end-start)/32-i)] >>(ssd->parameter->subpage_page*j)) & full_page;	
 						if (k !=0)
 						{
 							lpn = start/ssd->parameter->subpage_page+ ((end-start)/32-i)*32/ssd->parameter->subpage_page + j;
+							// 获取当前page需要请求的扇区数量
 							sub_size=transfer_size(ssd,k,lpn,req);    
 							if (sub_size==0) 
 							{
@@ -521,7 +825,9 @@ struct ssd_info *distribute(struct ssd_info *ssd)
 							}
 							else
 							{
-								sub=creat_sub_request(ssd,lpn,sub_size,0,req,req->operation);
+								// 创建请求去执行读flash操作,当前req的操作肯定是为read，如果是写操作，上面则直接return
+								// 这里因为是读请求，不用根据读写次数判断，因此rc，pc设置为0
+								sub=creat_sub_request(ssd,lpn,sub_size,0,req,req->operation,0,0);
 							}	
 						}
 					}
@@ -531,6 +837,7 @@ struct ssd_info *distribute(struct ssd_info *ssd)
 			}
 			else
 			{
+				// 如果读请求缓存命中，则直接加上dram处理时间即可
 				req->begin_time=ssd->current_time;
 				req->response_time=ssd->current_time+1000;   
 			}
@@ -569,6 +876,8 @@ void trace_output(struct ssd_info* ssd){
 		flag = 1;
 		start_time = 0;
 		end_time = 0;
+
+		// response_time表示的是请求完全能在dram中处理
 		if(req->response_time != 0)
 		{
 			fprintf(ssd->outputfile,"%16I64u %10u %6u %2u %16I64u %16I64u %10I64u\n",req->time,req->lsn, req->size, req->operation, req->begin_time, req->response_time, req->response_time-req->time);
@@ -1056,6 +1365,7 @@ struct ssd_info *make_aged(struct ssd_info *ssd)
 							{
 								break;
 							}
+							// 平均每个块中产生相同比例的无效页
 							for (n=0;n<(ssd->parameter->page_block*ssd->parameter->aged_ratio+1);n++)
 							{  
 								ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].page_head[n].valid_state=0;        //表示某一页失效，同时标记valid和free状态都为0
@@ -1086,60 +1396,60 @@ struct ssd_info *make_aged(struct ssd_info *ssd)
 *no_buffer_distribute()函数是处理当ssd没有dram的时候，
 *这是读写请求就不必再需要在buffer里面寻找，直接利用creat_sub_request()函数创建子请求，再处理。
 *********************************************************************************************/
-struct ssd_info *no_buffer_distribute(struct ssd_info *ssd)
-{
-	unsigned int lsn,lpn,last_lpn,first_lpn,complete_flag=0, state;
-	unsigned int flag=0,flag1=1,active_region_flag=0;           //to indicate the lsn is hitted or not
-	struct request *req=NULL;
-	struct sub_request *sub=NULL,*sub_r=NULL,*update=NULL;
-	struct local *loc=NULL;
-	struct channel_info *p_ch=NULL;
+// struct ssd_info *no_buffer_distribute(struct ssd_info *ssd)
+// {
+// 	unsigned int lsn,lpn,last_lpn,first_lpn,complete_flag=0, state;
+// 	unsigned int flag=0,flag1=1,active_region_flag=0;           //to indicate the lsn is hitted or not
+// 	struct request *req=NULL;
+// 	struct sub_request *sub=NULL,*sub_r=NULL,*update=NULL;
+// 	struct local *loc=NULL;
+// 	struct channel_info *p_ch=NULL;
 
 	
-	unsigned int mask=0; 
-	unsigned int offset1=0, offset2=0;
-	unsigned int sub_size=0;
-	unsigned int sub_state=0;
+// 	unsigned int mask=0; 
+// 	unsigned int offset1=0, offset2=0;
+// 	unsigned int sub_size=0;
+// 	unsigned int sub_state=0;
 
-	ssd->dram->current_time=ssd->current_time;
-	req=ssd->request_tail;       
-	lsn=req->lsn;
-	lpn=req->lsn/ssd->parameter->subpage_page;
-	last_lpn=(req->lsn+req->size-1)/ssd->parameter->subpage_page;
-	first_lpn=req->lsn/ssd->parameter->subpage_page;
+// 	ssd->dram->current_time=ssd->current_time;
+// 	req=ssd->request_tail;       
+// 	lsn=req->lsn;
+// 	lpn=req->lsn/ssd->parameter->subpage_page;
+// 	last_lpn=(req->lsn+req->size-1)/ssd->parameter->subpage_page;
+// 	first_lpn=req->lsn/ssd->parameter->subpage_page;
 
-	if(req->operation==READ)        
-	{		
-		while(lpn<=last_lpn) 		
-		{
-			sub_state=(ssd->dram->map->map_entry[lpn].state&0x7fffffff);
-			sub_size=size(sub_state);
-			sub=creat_sub_request(ssd,lpn,sub_size,sub_state,req,req->operation);
-			lpn++;
-		}
-	}
-	else if(req->operation==WRITE)
-	{
-		while(lpn<=last_lpn)     	
-		{	
-			mask=~(0xffffffff<<(ssd->parameter->subpage_page));
-			state=mask;
-			if(lpn==first_lpn)
-			{
-				offset1=ssd->parameter->subpage_page-((lpn+1)*ssd->parameter->subpage_page-req->lsn);
-				state=state&(0xffffffff<<offset1);
-			}
-			if(lpn==last_lpn)
-			{
-				offset2=ssd->parameter->subpage_page-((lpn+1)*ssd->parameter->subpage_page-(req->lsn+req->size));
-				state=state&(~(0xffffffff<<offset2));
-			}
-			sub_size=size(state);
+// 	if(req->operation==READ)        
+// 	{		
+// 		while(lpn<=last_lpn) 		
+// 		{
+// 			sub_state=(ssd->dram->map->map_entry[lpn].state&0x7fffffff);
+// 			sub_size=size(sub_state);
+// 			sub=creat_sub_request(ssd,lpn,sub_size,sub_state,req,req->operation);
+// 			lpn++;
+// 		}
+// 	}
+// 	else if(req->operation==WRITE)
+// 	{
+// 		while(lpn<=last_lpn)     	
+// 		{	
+// 			mask=~(0xffffffff<<(ssd->parameter->subpage_page));
+// 			state=mask;
+// 			if(lpn==first_lpn)
+// 			{
+// 				offset1=ssd->parameter->subpage_page-((lpn+1)*ssd->parameter->subpage_page-req->lsn);
+// 				state=state&(0xffffffff<<offset1);
+// 			}
+// 			if(lpn==last_lpn)
+// 			{
+// 				offset2=ssd->parameter->subpage_page-((lpn+1)*ssd->parameter->subpage_page-(req->lsn+req->size));
+// 				state=state&(~(0xffffffff<<offset2));
+// 			}
+// 			sub_size=size(state);
 
-			sub=creat_sub_request(ssd,lpn,sub_size,state,req,req->operation);
-			lpn++;
-		}
-	}
+// 			sub=creat_sub_request(ssd,lpn,sub_size,state,req,req->operation);
+// 			lpn++;
+// 		}
+// 	}
 
-	return ssd;
-}
+// 	return ssd;
+// }

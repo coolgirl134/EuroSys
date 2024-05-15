@@ -182,7 +182,7 @@ struct ssd_info *initiation(struct ssd_info *ssd)
 	return ssd;
 }
 
-
+// 将全部页的映射信息都加载到内存当中
 struct dram_info * initialize_dram(struct ssd_info * ssd)
 {
 	unsigned int page_num;
@@ -196,13 +196,53 @@ struct dram_info * initialize_dram(struct ssd_info * ssd)
 	alloc_assert(dram->map,"dram->map");
 	memset(dram->map,0, sizeof(struct map_info));
 
-	page_num = ssd->parameter->page_block*ssd->parameter->block_plane*ssd->parameter->plane_die*ssd->parameter->die_chip*ssd->parameter->chip_num;
+	page_num = ssd->parameter->page_block*ssd->parameter->block_plane*ssd->parameter->plane_die*ssd->parameter->die_chip*ssd->parameter->chip_num*BITS_PER_CELL;
 
 	dram->map->map_entry = (struct entry *)malloc(sizeof(struct entry) * page_num); //每个物理页和逻辑页都有对应关系
 	alloc_assert(dram->map->map_entry,"dram->map->map_entry");
 	memset(dram->map->map_entry,0,sizeof(struct entry) * page_num);
 	
 	return dram;
+}
+
+int buffer_type_ismatch(int type, int type_page,int nums)
+{
+	if(type == LC_PAGE && type_page == type){
+		return SUCCESS;
+	}else if(type == BGC_PAGE){
+		if( type_page == type){
+			if(nums == 3){
+				return SUCCESS;
+			}else{
+				// 未凑齐4页，继续累加
+				return BUFFER_NFULL;
+			}	
+		}else if(type_page == TSB_PAGE){
+			// 准备存放在BGC的页也可以存放到MSB中
+			return SUCCESS;
+		}
+		
+	}else if(type == TSB_PAGE && (type_page == type || type_page == MSB_PAGE)){
+		// 如果数据需要迁移到TSB_page,并且当前plane中已有TSB，可以存放到MSB中;
+		// 如果当前type_page为MSB_PAGE，则刚好可以存入TSB
+		return SUCCESS;
+	}else if(type == MSB_PAGE){
+		// 凑齐
+		if(type_page == TSB_PAGE){
+			return SUCCESS;
+		}else if(type_page == BGC){
+			// TODO：存在MSB_PAGE的页也可以存在BGC中(但这种情况可能会导致编程性能不佳，如果该页是写频繁的话)；这里需要再思考trade-off
+			if(nums < 4){
+				if(nums == 3){
+					return SUCCESS;
+				}else{
+					// 未凑齐4页，继续累加
+					return BUFFER_NFULL;
+				}
+			}
+		}
+	}
+    return FAILURE;
 }
 
 struct page_info * initialize_page(struct page_info * p_page )
@@ -214,17 +254,168 @@ struct page_info * initialize_page(struct page_info * p_page )
 	return p_page;
 }
 
+void enqueue_list(struct plane_location* plane,struct plane_list* list){
+	if(list->head == NULL){
+		list->head = list->tail = plane;
+	}else{
+		list->tail->next = plane;
+		list->tail = plane;
+		plane->next = NULL;
+	}
+}
+
+void enqueue_lpnlist(struct charat_list* list,unsigned int lpn){
+	struct logical_num* last;
+	last->lpn = lpn;
+	if(list->head == NULL){
+		list->head = list->tail = last;
+	}else{
+		list->tail->next = last;
+		list->tail = last;
+	}
+}
+
+void enqueue_wllist(unsigned int cellnum,struct cell_list* list){
+	struct cell_num* last;
+	last->cellnum = cellnum;
+	if(list->head == NULL){
+		list->head = list->tail = last;
+	}else{
+		list->tail->next = last;
+		list->tail = last;
+	}
+}
+
+// 找到对应lpn，将其移除链表
+int dequeue_lpnlist(struct charat_list* list,unsigned int lpn){
+	struct logical_num* last;
+
+	last = list->head;
+	while(last != NULL){
+		if(last->lpn = lpn) break;
+		last = last->next;
+	}
+	if(last == NULL){
+		return NONE;
+	}
+	if(last == list->tail){
+		list->head = list->tail = NULL;
+	}else{
+		last = list->head;
+		list->head = list->head->next;
+	}
+	return last->lpn;
+}
+
+struct plane_location* dequeue_list(struct plane_list* list){
+	struct plane_location* plane;
+
+	plane = list->head;
+	if(plane == NULL){
+		return NULL;
+	}else if(plane == list->tail){
+		list->head = list->tail = NULL;
+	}else{
+		plane = list->head;
+		list->head = list->head->next;
+		plane->next = NULL;
+	}
+	return plane;
+}
+
+// struct cell_num* dequeue_WLlist(struct cell_list* list,struct cell_num* wordline,struct cell_num* prev){
+// 	if(wordline == NULL){
+// 		return NULL;
+// 	}else if(wordline == list->tail){
+// 		list->tail = prev;
+// 		prev->next = NULL;
+// 	}else{
+// 		prev->next = wordline->next;
+// 		wordline->next = NULL;
+// 	}
+// 	return wordline;
+// }
+
+struct cell_num* dequeue_WLlist(struct cell_list* list){
+	struct cell_num* wordline = list->head;
+
+	if(wordline == NULL){
+		return NULL;
+	}else if(wordline == list->tail){
+		list->head = list->tail = NULL;
+	}else{
+		wordline = list->head;
+		list->head = list->head->next;
+	}
+	return wordline;
+}
+
+// 记录每个plane中现在的page register存放的是什么类型的page
+// 例如，如果某个plane中存放了LSB，则插入到LC_list中，当这个plane中再填充CSB时，则可以直接刷新到nand中的操作
+// 即可以进行时间计算，随后把plane插入到NONE_list中，等待下次分配
+void intialize_list(struct ssd_info* ssd){
+	r_LC_list = (struct plane_list*)malloc(sizeof(struct plane_list));
+	r_MT_list = (struct plane_list*)malloc(sizeof(struct plane_list));
+	LC_list = (struct plane_list*)malloc(sizeof(struct plane_list));
+	MT_list = (struct plane_list*)malloc(sizeof(struct plane_list));
+	NONE_list = (struct plane_list*)malloc(sizeof(struct plane_list));
+	r_iMT_list = (struct plane_list*)malloc(sizeof(struct plane_list));
+	invalid_LC =  (struct plane_list*)malloc(sizeof(struct plane_list));
+	r_LC_list->head = r_LC_list->tail = NULL;
+	r_MT_list->head = r_MT_list->tail = NULL;
+	LC_list->head = LC_list->tail = NULL;
+	MT_list->head = MT_list->tail = NULL;
+	NONE_list->head = NONE_list->tail = NULL;
+	r_iMT_list->head = r_iMT_list->tail = NULL;
+	invalid_LC->head = invalid_LC->tail = NULL;
+	
+	int i,j,k,t;
+	unsigned int channel_num = ssd->parameter->channel_number;
+	unsigned int chip_num = ssd->parameter->chip_channel[0];
+	unsigned int die_num = ssd->parameter->die_chip;
+	unsigned int plane_num = ssd->parameter->plane_die;
+	unsigned int plane_chip = ssd->parameter->plane_die * die_num;
+	unsigned int plane_channel = plane_chip * chip_num;
+	for (i=0;i<channel_num;i++)
+	{
+		for (j=0;j<chip_num;j++)
+		{
+			for (k=0;k<die_num;k++)
+			{
+				for (t=0;t<plane_num;t++)
+				{
+					struct plane_location* plane = (struct plane_location*)malloc(sizeof(struct plane_location));
+					plane->channel = i;
+					plane->chip = j;
+					plane->die = k;
+					plane->plane = t;
+					plane->buffer_nums = 0;
+					plane->type = NONE;
+					plane->prog_scheme = NONE;
+					// TODO:判断这个是否有必要
+					plane->plane_index = i * plane_channel + j * plane_chip + k * plane_num + t;
+					enqueue_list(plane,NONE_list);
+				}
+			}
+		}
+	}
+}
+
 struct blk_info * initialize_block(struct blk_info * p_block,struct parameter_value *parameter)
 {
 	unsigned int i;
 	struct page_info * p_page;
 	
-	p_block->free_page_num = parameter->page_block;	// all pages are free
-	p_block->last_write_page = -1;	// no page has been programmed
+	p_block->free_page_num = parameter->page_block * BITS_PER_CELL;	// all bit pages are free
+	p_block->last_write_page = NONE;	// no page has been programmed
+	p_block->program_scheme = NONE;
 
 	p_block->page_head = (struct page_info *)malloc(parameter->page_block * sizeof(struct page_info));
+	p_block->valid_MT = (__int64)0;
+	p_block->MT_page = NONE;
 	alloc_assert(p_block->page_head,"p_block->page_head");
 	memset(p_block->page_head,0,parameter->page_block * sizeof(struct page_info));
+	p_block->LCMT_number[0] = p_block->LCMT_number[1] = NONE;
 
 	for(i = 0; i<parameter->page_block; i++)
 	{
@@ -240,16 +431,33 @@ struct plane_info * initialize_plane(struct plane_info * p_plane,struct paramete
 	unsigned int i;
 	struct blk_info * p_block;
 	p_plane->add_reg_ppn = -1;  //plane 里面的额外寄存器additional register -1 表示无数据
-	p_plane->free_page=parameter->block_plane*parameter->page_block;
-
+	p_plane->free_page=parameter->block_plane*parameter->page_block * BITS_PER_CELL; //标识bit数量
+	
 	p_plane->blk_head = (struct blk_info *)malloc(parameter->block_plane * sizeof(struct blk_info));
+	p_plane->invalid_LC_ppn = (struct cell_list*)malloc(sizeof(struct cell_list));
 	alloc_assert(p_plane->blk_head,"p_plane->blk_head");
 	memset(p_plane->blk_head,0,parameter->block_plane * sizeof(struct blk_info));
+	
+	
+	// 默认刚开始，块0为pos，块1为rev
+	// p_plane->POS_LC_activeblk = p_plane->POS_MT_activeblk = 0;
+	// p_plane->REV_LC_activeblk = p_plane->REV_MT_activeblk = 1;
+	// 默认刚开始，活跃块均为none
+	p_plane->POS_LC_activeblk = p_plane->POS_MT_activeblk = NONE;
+	p_plane->REV_LC_activeblk = p_plane->REV_MT_activeblk = NONE;
+	for(int i = 0;i < BITS_PER_CELL;i ++){
+		p_plane->free_pagenum[i]  = 0;
+		p_plane->activeblk[i] = NONE;
+	}
+	// 设置空闲块数量
+	p_plane->free_blocknum = parameter->block_plane;
+	
 
 	for(i = 0; i<parameter->block_plane; i++)
 	{
 		p_block = &(p_plane->blk_head[i]);
-		initialize_block( p_block ,parameter);			
+		initialize_block( p_block ,parameter);	
+				
 	}
 	return p_plane;
 }

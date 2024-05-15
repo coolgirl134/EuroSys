@@ -46,6 +46,35 @@ Zhiming Zhu     2012/07/19        2.1.1         Correct erase_planes()   8128398
 #define READ 1
 #define WRITE 0
 
+#define BITS_PER_CELL 4
+
+#define UGC 0
+#define BGC 4
+
+#define NONE_PAGE -1
+#define LC_PAGE 0
+#define MT_PAGE 5
+#define LSB_PAGE 0
+#define CSB_PAGE 1
+#define MSB_PAGE 2
+#define TSB_PAGE 3
+#define BGC_PAGE 4
+
+// planetype
+#define R_LC 0
+#define R_MT 1
+#define P_LC 2
+#define P_MT 3
+#define R_iMT 4	//记录当前plane中执行反向无效编程的块号，在等待凑够两个page时采用
+
+#define TR_COUNT 1		//UGC TSB_read_counts maximum
+#define BR_COUNT 3		//UGC MSB and all pages of BGC read counts maximum
+// TODO : 判断编程阈值如何设置最佳
+#define PROG_COUNT 10		//BGC program_counts maximum
+
+#define UGC_MAX			//UGC在每个plane的块的数量不超过该值（即UGC_num < UGC_max)，即BGC的开始块号
+
+
 /*********************************all states of each objects************************************************
 *一下定义了channel的空闲，命令地址传输，数据传输，传输，其他等状态
 *还有chip的空闲，写忙，读忙，命令地址传输，数据传输，擦除忙，copyback忙，其他等状态
@@ -69,13 +98,21 @@ Zhiming Zhu     2012/07/19        2.1.1         Correct erase_planes()   8128398
 #define CHIP_COPYBACK_BUSY 110
 #define UNKNOWN 111
 
-#define SR_WAIT 200                 
+// 对于写请求：等待将数据从data register刷新到flash中；对于读请求：等待将数据从flash读出到data register中
+#define SR_WAIT 200       
+//读请求：命令地址传输
 #define SR_R_C_A_TRANSFER 201
+// 读请求：将一个page的数据从flash读取到data register的时间，不同编程方式，不同的两个bit时间不同
 #define SR_R_READ 202
+// 读请求：将数据从data regitster读出到ssd主控的时间，channel busy
 #define SR_R_DATA_TRANSFER 203
+// 写请求：命令地址传输
 #define SR_W_C_A_TRANSFER 204
+// 写请求：数据通过channel写到die上的data register的时间
 #define SR_W_DATA_TRANSFER 205
+// 写请求：将数据从data register刷新到nand flash的时间，不同编程方式，不同的两个bit时间不同
 #define SR_W_TRANSFER 206
+// 读写请求，请求完成
 #define SR_COMPLETE 299
 
 #define REQUEST_IN 300         //下一条请求到达的时间
@@ -109,7 +146,63 @@ Zhiming Zhu     2012/07/19        2.1.1         Correct erase_planes()   8128398
 #define ERROR		-1
 #define INFEASIBLE	-2
 #define OVERFLOW	-3
-typedef int Status;     
+#define BUFFER_NFULL 2
+typedef int Status;  
+
+/*****************************************
+*表示编程方式：正向编程、反向编程
+******************************************/
+#define NONE -1
+#define REVERSE 0
+#define POSITIVE 1
+
+/*****************************************
+*读写操作阈值,热读：10次；热编程：10次；冷：3次
+******************************************/
+#define HOT_READ 1
+#define HOT_PROG 1
+#define COLD_NUM 3
+
+#define HOTPROG 0
+#define HOTREAD 1
+#define WARMREAD 2
+#define COLD 3
+
+#define HPHR 0
+#define HPCR 1
+#define CPHR 2
+#define CPCR 3
+
+// 存放LC 、MSB、TSB、BGC、none五种类型的plane链表,记得进行初始化
+struct plane_list* LC_list;
+struct plane_list* MT_list;
+struct plane_list* r_LC_list;
+struct plane_list* r_iMT_list;
+struct plane_list* r_MT_list;
+struct plane_list* MSB_list;
+struct plane_list* TSB_list;
+struct plane_list* BGC_list;
+struct plane_list* NONE_list;
+
+// 存放前两页无效的cellnum，MSB_ppn = cellnum * 4 + 2;TSB_ppn = cellnum * 4 + 3
+struct plane_list* invalid_LC;
+
+// 数据热度链表
+struct charat_list* HOTREAD_list;
+struct charat_list* HOTPROG_list;
+struct charat_list* WARM_list;
+struct charat_list* COLD_list;
+
+struct cell_num{
+	unsigned int cellnum;
+	struct cell_num* next;
+};
+
+
+struct cell_list{
+	struct cell_num* head;
+	struct cell_num* tail;
+};
 
 struct ac_time_characteristics{
 	int tPROG;     //program time
@@ -267,21 +360,41 @@ struct die_info{
 
 struct plane_info{
 	int add_reg_ppn;                    //read，write时把地址传送到该变量，该变量代表地址寄存器。die由busy变为idle时，清除地址 //有可能因为一对多的映射，在一个读请求时，有多个相同的lpn，所以需要用ppn来区分  
-	unsigned int free_page;             //该plane中有多少free page
+	unsigned int free_page;             //该plane中有多少free page,bits
 	unsigned int ers_invalid;           //记录该plane中擦除失效的块数
 	unsigned int active_block;          //if a die has a active block, 该项表示其物理块号
+	unsigned int activeblk[4];			//0：RLC 1：RMT 2：PLC 3：PMT
+	unsigned int POS_LC_activeblk;
+	unsigned int POS_MT_activeblk;
+	unsigned int REV_LC_activeblk;
+	unsigned int REV_MT_activeblk;
 	int can_erase_block;                //记录在一个plane中准备在gc操作中被擦除操作的块,-1表示还没有找到合适的块
 	struct direct_erase *erase_node;    //用来记录可以直接删除的块号,在获取新的ppn时，每当出现invalid_page_num==64时，将其添加到这个指针上，供GC操作时直接删除
 	struct blk_info *blk_head;
+	int page_buffer_type;		//记录当前page_buffer里面存放的是什么数据：R_LC(0) R_MT(1) P_LC(2) P_MT(3)
+	struct cell_list* invalid_LC_ppn;			//用链表存放当前plane中哪些执行的反向编程前两页无效的物理字线地址，跟据物理字线地址可以推出块号和物理页号
+	int free_blocknum;					//记录当前plane中剩余多少空闲块，未被分配编程方式；
+	int free_pagenum[4];				//0RLC 1RMT 2LC 3MT
+	int buffer_scheme;					// 记录当前page buffer指定的编程方式
+	int none_page[4];					//记录当前plane哪种类型的page已用完
+	int cellnum;						//如果pagebuffer被占据，则这里存放cellnum的位置，则无需去find activeblock，在gc中可以用到
 };
 
 
 struct blk_info{
 	unsigned int erase_count;          //块的擦除次数，该项记录在ram中，用于GC
-	unsigned int free_page_num;        //记录该块中的free页个数，同上
-	unsigned int invalid_page_num;     //记录该块中失效页的个数，同上
-	int last_write_page;               //记录最近一次写操作执行的页数,-1表示该块没有一页被写过
+	unsigned int free_page_num;        //记录该块中的free页的数量（用于衡量是否gc），对应的是bit数量
+	unsigned int invalid_page_num;     //记录该块中失效页的个数（bit）
+	int last_write_page;               //(WL)记录最近一次写操作执行的页数,-1表示该块没有一页被写过
+	int last_LC_page;
+	int last_MT_page;
 	struct page_info *page_head;       //记录每一子页的状态
+	int LCMT_number[2];					//0:LC 1:MT 标识当前执行到的字线位置
+	__int64 valid_MT;					//用bitmap标识其是否被invalid编程，1表示为无效编程
+	unsigned int MT_page;				//如果执行的无效编程，则用这个变量存放当前无效编程的字线位置，当执行完成后，置0
+	int LC_number;					   //记录当前写操作执行到的LC字线位置，-1表示该块没有LC被写过；LC指的是LSB和CSB
+	int MT_number;					   //记录当前写操作执行的MT字线位置，-1表示该块没有MT被写过；MT指的是MSB和TSB看，需要保证MT_number < LC_number
+	int program_scheme;					//记录该块的编程模式：正向编程（POSITIVE） 反向编程（REVERSE）
 };
 
 
@@ -290,6 +403,9 @@ struct page_info{                      //lpn记录该物理页存储的逻辑页，当该逻辑页
 	int free_state;                    //each bit indicates the subpage is free or occupted. 1 indicates that the bit is free and 0 indicates that the bit is used
 	unsigned int lpn;                 
 	unsigned int written_count;        //记录该页被写的次数
+	unsigned int read_count;			//记录该页被读次数
+	int type;							//记录该页的类型：LSB_page(0),CSB_page(1),MSB_page(2),TSB(3)
+	int prog_scheme;					//记录该页的编程方式
 };
 
 
@@ -321,7 +437,11 @@ typedef struct buffer_group{
 	unsigned int group;                 //the first data logic sector number of a group stored in buffer 
 	unsigned int stored;                //indicate the sector is stored in buffer or not. 1 indicates the sector is stored and 0 indicate the sector isn't stored.EX.  00110011 indicates the first, second, fifth, sixth sector is stored in buffer.
 	unsigned int dirty_clean;           //it is flag of the data has been modified, one bit indicates one subpage. EX. 0001 indicates the first subpage is dirty
-	int flag;			                //indicates if this node is the last 20% of the LRU list	
+	int flag;			                //indicates if this node is the last 20% of the LRU list
+	unsigned int read_count;
+	unsigned int prog_count;
+	// 当数据被修改时，则根据它的各种访问阈值分配到指定的链表中
+	int type;							//标识这个lpa被分配到哪个链表中：0，cold；warm，1；hot_read,2;hot_prog,3;
 }buf_node;
 
 
@@ -372,6 +492,12 @@ struct sub_request{
 	unsigned int operation;            //表示该子请求的类型，除了读1 写0，还有擦除，two plane等操作 
 	int size;
 
+	int prog_scheme;					//表示该子请求的编程方式：REVERSE / POSITIVE
+	int page_type;						//表示写入的bit类型：LSB/CSB/MSB/TSB,在进行时间处理时需要用到
+	int read_times;
+	unsigned int prog_count;
+	unsigned int read_count;
+
 	unsigned int current_state;        //表示该子请求所处的状态，见宏定义sub request
 	__int64 current_time;
 	unsigned int next_state;
@@ -410,7 +536,7 @@ struct parameter_value{
 	unsigned int die_chip;    
 	unsigned int plane_die;
 	unsigned int block_plane;
-	unsigned int page_block;
+	unsigned int page_block;		//对应的是WL数量
 	unsigned int subpage_page;
 
 	unsigned int page_capacity;
@@ -469,6 +595,8 @@ struct parameter_value{
 struct entry{                       
 	unsigned int pn;                //物理号，既可以表示物理页号，也可以表示物理子页号，也可以表示物理块号
 	int state;                      //十六进制表示的话是0000-FFFF，每位表示相应的子页是否有效（页映射）。比如在这个页中，0，1号子页有效，2，3无效，这个应该是0x0003.
+	unsigned int read_count;
+	unsigned int prog_count;
 };
 
 
@@ -478,10 +606,44 @@ struct local{
 	unsigned int die;
 	unsigned int plane;
 	unsigned int block;
+	// 这里的page应该对应bits，才能在ssd dram中去标识每一个具体的bit的ppn和lpn
 	unsigned int page;
 	unsigned int sub_page;
+	unsigned int plane_index;
 };
 
+struct plane_location{
+	unsigned int channel;
+	unsigned int chip;
+	unsigned int die;
+	unsigned int plane;
+	unsigned int buffer_nums;	//记录当前是否凑够两个可以一起写入闪存的page
+	unsigned int plane_index;	//记录当前plane的索引号：plane_index = i * plane_channel + j * plane_chip + k * plane_num + t
+	int type;					//记录当前plane buffer被什么类型的bit占据了：R_LC R_MT P_LC P_MT
+	int prog_scheme;			//记录当前plane buffer被什么编程方式的数据占据：POSITIVE REVERSE
+	struct plane_location* next;
+};
+
+/********************************************************
+*链表：记录对应哪个plane
+*********************************************************/
+struct plane_list{          
+	struct plane_location* head;
+	struct plane_location* tail;
+};
+
+/********************************************************
+*链表：存放lpn
+*********************************************************/
+struct charat_list{          
+	struct logical_num* head;
+	struct logical_num* tail;
+};
+
+struct logical_num{
+	int lpn;
+	struct logical_num* next;
+};
 
 struct gc_info{
 	__int64 begin_time;            //记录一个plane什么时候开始gc操作的
@@ -531,3 +693,15 @@ struct die_info * initialize_die(struct die_info * p_die,struct parameter_value 
 struct chip_info * initialize_chip(struct chip_info * p_chip,struct parameter_value *parameter,long long current_time );
 struct ssd_info * initialize_channels(struct ssd_info * ssd );
 struct dram_info * initialize_dram(struct ssd_info * ssd);
+void typeofdata(int rc,int pc,int* page_type,int* prog_scheme);
+void typeofdata_new(int rc,int pc,int* page_type);
+int buffer_type_ismatch(int type,int type_page,int nums);
+unsigned int get_cellnums(struct ssd_info *ssd,unsigned int channel,unsigned int chip,unsigned int die,unsigned int plane,unsigned int block,int type);
+unsigned int process_pagenums(struct ssd_info *ssd,unsigned int channel,unsigned int chip,unsigned int die,unsigned int plane,unsigned int block,int type);
+void intialize_list(struct ssd_info* ssd);
+struct plane_location* dequeue_list(struct plane_list* list);
+struct cell_num* dequeue_WLlist(struct cell_list* list);
+void enqueue_list(struct plane_location* plane,struct plane_list* list);
+void enqueue_lpnlist(struct charat_list* list,unsigned int lpn);
+int dequeue_lpnlist(struct charat_list* list,unsigned int lpn);
+void enqueue_wllist(unsigned int cellnum,struct cell_list* list);
