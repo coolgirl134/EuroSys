@@ -11,7 +11,6 @@
             "program": "E:\\Eurosys\\github_code\\ssdsim-master\\ssd.exe",
             "args": [],
             "stopAtEntry": false,
-            "debugStdLib":true,
             "cwd": "${fileDirname}",
             "environment": [],
             "externalConsole": false,

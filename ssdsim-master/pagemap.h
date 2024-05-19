@@ -27,7 +27,7 @@ struct ssd_info *pre_process_page(struct ssd_info *ssd);
 unsigned int get_ppn_for_pre_process(struct ssd_info *ssd,unsigned int lsn);
 unsigned int get_ppn_for_pre_process_new(struct ssd_info *ssd,unsigned int lsn);
 struct ssd_info *get_ppn(struct ssd_info *ssd,unsigned int channel,unsigned int chip,unsigned int die,unsigned int plane,struct sub_request *sub);
-struct ssd_info *get_ppn_new(struct ssd_info *ssd,struct sub_request *sub1,struct sub_request *sub2);
+struct ssd_info *get_ppn_new(struct ssd_info *ssd,struct sub_request *sub1);
 unsigned int gc(struct ssd_info *ssd,unsigned int channel, unsigned int flag);
 int gc_direct_erase(struct ssd_info *ssd,unsigned int channel,unsigned int chip,unsigned int die,unsigned int plane);
 int uninterrupt_gc(struct ssd_info *ssd,unsigned int channel,unsigned int chip,unsigned int die,unsigned int plane);

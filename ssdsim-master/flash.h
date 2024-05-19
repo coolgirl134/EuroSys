@@ -57,6 +57,6 @@ int services_2_r_data_trans(struct ssd_info * ssd,unsigned int channel,unsigned 
 int services_2_write(struct ssd_info * ssd,unsigned int channel,unsigned int * channel_busy_flag, unsigned int * change_current_time_flag);
 int delete_w_sub_request(struct ssd_info * ssd, unsigned int channel, struct sub_request * sub );
 int copy_back(struct ssd_info * ssd, unsigned int channel, unsigned int chip, unsigned int die,struct sub_request * sub);
-int static_write(struct ssd_info * ssd, unsigned int channel,unsigned int chip, unsigned int die,struct sub_request * sub,struct sub_request* sub2);
+Status static_write(struct ssd_info * ssd, unsigned int channel,unsigned int chip, unsigned int die,struct sub_request * sub);
 
 

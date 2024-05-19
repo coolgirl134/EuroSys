@@ -54,9 +54,6 @@ void main()
 	ssd=initiation(ssd);
 	make_aged(ssd);
 	intialize_list(ssd);
-	if(NONE_list == NULL){
-		printf("NONE_list is NULL\n");
-	}
 	pre_process_page(ssd);
 
 	for (i=0;i<ssd->parameter->channel_number;i++)
@@ -111,7 +108,7 @@ struct ssd_info *simulate(struct ssd_info *ssd)
 
 	fprintf(ssd->outputfile,"      arrive           lsn     size ope     begin time    response time    process time\n");	
 	fflush(ssd->outputfile);
-
+	int t = 0;
 	while(flag!=100)      
 	{
         
@@ -136,6 +133,11 @@ struct ssd_info *simulate(struct ssd_info *ssd)
 
 		process(ssd);    
 		trace_output(ssd);
+		t++;
+		// printf("t = %d\n",t);
+		// if(t == 8233){
+		// 	printf("debug bug here,t is %d \n",t);
+		// }
 		if(flag == 0 && ssd->request_queue == NULL)
 			flag = 100;
 	}
@@ -892,12 +894,14 @@ void trace_output(struct ssd_info* ssd){
 			if (req->operation==READ)
 			{
 				ssd->read_request_count++;
-				ssd->read_avg=ssd->read_avg+(req->response_time-req->time);
+				// 所以读请求还是到直接到flash中读，不到buffer了
+				// ssd->read_avg=ssd->read_avg+(req->response_time-req->time);
 			} 
 			else
 			{
 				ssd->write_request_count++;
-				ssd->write_avg=ssd->write_avg+(req->response_time-req->time);
+				// 这里不要算上buffer时间
+				// ssd->write_avg=ssd->write_avg+(req->response_time-req->time);
 			}
 
 			if(pre_node == NULL)
@@ -1130,8 +1134,8 @@ void statistic_output(struct ssd_info *ssd)
 	fprintf(ssd->outputfile,"write request count: %13d\n",ssd->write_request_count);
 	fprintf(ssd->outputfile,"read request average size: %13f\n",ssd->ave_read_size);
 	fprintf(ssd->outputfile,"write request average size: %13f\n",ssd->ave_write_size);
-	fprintf(ssd->outputfile,"read request average response time: %16I64u\n",ssd->read_avg/ssd->read_request_count);
-	fprintf(ssd->outputfile,"write request average response time: %16I64u\n",ssd->write_avg/ssd->write_request_count);
+	fprintf(ssd->outputfile,"read request average response time(not include buffer time): %16I64u\n",ssd->read_avg/ssd->read_request_count);
+	fprintf(ssd->outputfile,"write request average response time(not include buffer time): %16I64u\n",ssd->write_avg/ssd->write_request_count);
 	fprintf(ssd->outputfile,"buffer read hits: %13d\n",ssd->dram->buffer->read_hit);
 	fprintf(ssd->outputfile,"buffer read miss: %13d\n",ssd->dram->buffer->read_miss_hit);
 	fprintf(ssd->outputfile,"buffer write hits: %13d\n",ssd->dram->buffer->write_hit);
@@ -1349,44 +1353,44 @@ struct ssd_info *make_aged(struct ssd_info *ssd)
 	unsigned int i,j,k,l,m,n,ppn;
 	int threshould,flag=0;
     
-	if (ssd->parameter->aged==1)
-	{
-		//threshold表示一个plane中有多少页需要提前置为失效
-		threshould=(int)(ssd->parameter->block_plane*ssd->parameter->page_block*ssd->parameter->aged_ratio);  
-		for (i=0;i<ssd->parameter->channel_number;i++)
-			for (j=0;j<ssd->parameter->chip_channel[i];j++)
-				for (k=0;k<ssd->parameter->die_chip;k++)
-					for (l=0;l<ssd->parameter->plane_die;l++)
-					{  
-						flag=0;
-						for (m=0;m<ssd->parameter->block_plane;m++)
-						{  
-							if (flag>=threshould)
-							{
-								break;
-							}
-							// 平均每个块中产生相同比例的无效页
-							for (n=0;n<(ssd->parameter->page_block*ssd->parameter->aged_ratio+1);n++)
-							{  
-								ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].page_head[n].valid_state=0;        //表示某一页失效，同时标记valid和free状态都为0
-								ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].page_head[n].free_state=0;         //表示某一页失效，同时标记valid和free状态都为0
-								ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].page_head[n].lpn=0;  //把valid_state free_state lpn都置为0表示页失效，检测的时候三项都检测，单独lpn=0可以是有效页
-								ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].free_page_num--;
-								ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].invalid_page_num++;
-								ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].last_write_page++;
-								ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].free_page--;
-								flag++;
+	// if (ssd->parameter->aged==1)
+	// {
+	// 	//threshold表示一个plane中有多少页需要提前置为失效
+	// 	threshould=(int)(ssd->parameter->block_plane*ssd->parameter->page_block*ssd->parameter->aged_ratio);  
+	// 	for (i=0;i<ssd->parameter->channel_number;i++)
+	// 		for (j=0;j<ssd->parameter->chip_channel[i];j++)
+	// 			for (k=0;k<ssd->parameter->die_chip;k++)
+	// 				for (l=0;l<ssd->parameter->plane_die;l++)
+	// 				{  
+	// 					flag=0;
+	// 					for (m=0;m<ssd->parameter->block_plane;m++)
+	// 					{  
+	// 						if (flag>=threshould)
+	// 						{
+	// 							break;
+	// 						}
+	// 						// 平均每个块中产生相同比例的无效页
+	// 						for (n=0;n<(ssd->parameter->page_block*ssd->parameter->aged_ratio+1);n++)
+	// 						{  
+	// 							ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].page_head[n].valid_state=0;        //表示某一页失效，同时标记valid和free状态都为0
+	// 							ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].page_head[n].free_state=0;         //表示某一页失效，同时标记valid和free状态都为0
+	// 							ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].page_head[n].lpn=0;  //把valid_state free_state lpn都置为0表示页失效，检测的时候三项都检测，单独lpn=0可以是有效页
+	// 							ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].free_page_num--;
+	// 							ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].invalid_page_num++;
+	// 							ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].blk_head[m].last_write_page++;
+	// 							ssd->channel_head[i].chip_head[j].die_head[k].plane_head[l].free_page--;
+	// 							flag++;
 
-								ppn=find_ppn(ssd,i,j,k,l,m,n);
+	// 							ppn=find_ppn(ssd,i,j,k,l,m,n);
 							
-							}
-						} 
-					}	 
-	}  
-	else
-	{
-		return ssd;
-	}
+	// 						}
+	// 					} 
+	// 				}	 
+	// }  
+	// else
+	// {
+	// 	return ssd;
+	// }
 
 	return ssd;
 }

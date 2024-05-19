@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "type_traits": "c",
-        "initialize.h": "c"
+        "initialize.h": "c",
+        "flash.h": "c"
     }
 }

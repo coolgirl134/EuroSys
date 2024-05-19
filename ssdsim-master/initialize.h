@@ -74,7 +74,6 @@ Zhiming Zhu     2012/07/19        2.1.1         Correct erase_planes()   8128398
 
 #define UGC_MAX			//UGC在每个plane的块的数量不超过该值（即UGC_num < UGC_max)，即BGC的开始块号
 
-
 /*********************************all states of each objects************************************************
 *一下定义了channel的空闲，命令地址传输，数据传输，传输，其他等状态
 *还有chip的空闲，写忙，读忙，命令地址传输，数据传输，擦除忙，copyback忙，其他等状态
@@ -153,8 +152,8 @@ typedef int Status;
 *表示编程方式：正向编程、反向编程
 ******************************************/
 #define NONE -1
-#define REVERSE 0
-#define POSITIVE 1
+#define REVERSE 1
+#define POSITIVE 2
 
 /*****************************************
 *读写操作阈值,热读：10次；热编程：10次；冷：3次
@@ -372,12 +371,13 @@ struct plane_info{
 	struct direct_erase *erase_node;    //用来记录可以直接删除的块号,在获取新的ppn时，每当出现invalid_page_num==64时，将其添加到这个指针上，供GC操作时直接删除
 	struct blk_info *blk_head;
 	int page_buffer_type;		//记录当前page_buffer里面存放的是什么数据：R_LC(0) R_MT(1) P_LC(2) P_MT(3)
-	struct cell_list* invalid_LC_ppn;			//用链表存放当前plane中哪些执行的反向编程前两页无效的物理字线地址，跟据物理字线地址可以推出块号和物理页号
+	struct cell_list* invalid_LC_ppn;			//用链表存放当前plane中哪些执行的反向编程前两页无效的物理字线地址，跟据物理字线地址可以推出块号和物理页号，这里的插入的是相对于plane的字线偏移量
 	int free_blocknum;					//记录当前plane中剩余多少空闲块，未被分配编程方式；
 	int free_pagenum[4];				//0RLC 1RMT 2LC 3MT
 	int buffer_scheme;					// 记录当前page buffer指定的编程方式
 	int none_page[4];					//记录当前plane哪种类型的page已用完
 	int cellnum;						//如果pagebuffer被占据，则这里存放cellnum的位置，则无需去find activeblock，在gc中可以用到
+	int get_invalid;					//标识该plane中有多少被invalid的page
 };
 
 
@@ -395,6 +395,7 @@ struct blk_info{
 	int LC_number;					   //记录当前写操作执行到的LC字线位置，-1表示该块没有LC被写过；LC指的是LSB和CSB
 	int MT_number;					   //记录当前写操作执行的MT字线位置，-1表示该块没有MT被写过；MT指的是MSB和TSB看，需要保证MT_number < LC_number
 	int program_scheme;					//记录该块的编程模式：正向编程（POSITIVE） 反向编程（REVERSE）
+	int invalid_cellnum;				//标识当前块中有多少cell执行了invalid program，在计算R_MT位置时用到
 };
 
 
@@ -597,6 +598,7 @@ struct entry{
 	int state;                      //十六进制表示的话是0000-FFFF，每位表示相应的子页是否有效（页映射）。比如在这个页中，0，1号子页有效，2，3无效，这个应该是0x0003.
 	unsigned int read_count;
 	unsigned int prog_count;
+	int read_times;
 };
 
 

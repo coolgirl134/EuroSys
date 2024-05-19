@@ -103,9 +103,9 @@ the 1 channel, 1 chip, 1 die, 2048 plane has :             0 erase operations
 ---------------------------statistic data---------------------------
 min lsn:             4
 max lsn:       1002411
-read count:         15786
-program count:         19944                        include the flash write count leaded by read requests
-the read operation leaded by un-covered update count:          1532
+read count:         15735
+program count:         25936                        include the flash write count leaded by read requests
+the read operation leaded by un-covered update count:          1515
 erase count:             0
 direct erase count:             0
 copy back count:             0
@@ -116,19 +116,19 @@ interleave read count:             0
 interleave two plane and one program count:             0
 interleave two plane count:             0
 gc copy back count:             0
-write flash count:         13484
+write flash count:         19476
 waste page count:             0
 interleave erase count:             0
 multiple plane erase count:             0
 interleave multiple plane erase count:             0
 read request count:          4077
-write request count:          5920
-read request average size:     12.187638
-write request average size:      9.849072
-read request average response time:           205453
-write request average response time:        261732140
-buffer read hits:          1109
+write request count:          5925
+read request average size:     12.187936
+write request average size:      9.836668
+read request average response time:           205417
+write request average response time:           483381
+buffer read hits:          1126
 buffer read miss:           123
-buffer write hits:         14398
-buffer write miss:         11036
+buffer write hits:         14431
+buffer write miss:         32651
 erase:             0
