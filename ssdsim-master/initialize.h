@@ -158,8 +158,8 @@ typedef int Status;
 /*****************************************
 *读写操作阈值,热读：10次；热编程：10次；冷：3次
 ******************************************/
-#define HOT_READ 1
-#define HOT_PROG 1
+#define HOT_READ 20
+#define HOT_PROG 7
 #define COLD_NUM 3
 
 #define HOTPROG 0
@@ -167,8 +167,8 @@ typedef int Status;
 #define WARMREAD 2
 #define COLD 3
 
-#define HPHR 0
-#define HPCR 1
+#define HPHR 5
+#define HPCR 4
 #define CPHR 2
 #define CPCR 3
 
@@ -257,6 +257,9 @@ struct ssd_info{
 	unsigned int read_request_count;     //记录读操作的次数
 	__int64 write_avg;                   //记录用于计算写请求平均响应时间的时间
 	__int64 read_avg;                    //记录用于计算读请求平均响应时间的时间
+	long long tail_latency;				//记录尾延迟
+	long long read;
+	long long write;
 
 	unsigned int min_lsn;
 	unsigned int max_lsn;
@@ -696,7 +699,7 @@ struct chip_info * initialize_chip(struct chip_info * p_chip,struct parameter_va
 struct ssd_info * initialize_channels(struct ssd_info * ssd );
 struct dram_info * initialize_dram(struct ssd_info * ssd);
 void typeofdata(int rc,int pc,int* page_type,int* prog_scheme);
-void typeofdata_new(int rc,int pc,int* page_type);
+void typeofdata_new(struct ssd_info* ssd ,unsigned int lpn,int* page_type);
 int buffer_type_ismatch(int type,int type_page,int nums);
 unsigned int get_cellnums(struct ssd_info *ssd,unsigned int channel,unsigned int chip,unsigned int die,unsigned int plane,unsigned int block,int type);
 unsigned int process_pagenums(struct ssd_info *ssd,unsigned int channel,unsigned int chip,unsigned int die,unsigned int plane,unsigned int block,int type);

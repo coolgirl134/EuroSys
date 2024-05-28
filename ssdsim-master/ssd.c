@@ -100,11 +100,18 @@ struct ssd_info *simulate(struct ssd_info *ssd)
 	printf("\n");
 	printf("   ^o^    OK, please wait a moment, and enjoy music and coffee   ^o^    \n");
 
-	if((err=fopen_s(&(ssd->tracefile),ssd->tracefilename,"r"))!=0)
-	{  
+	// if((err=fopen_s(&(ssd->tracefile),ssd->tracefilename,"r"))!=0)
+	// {  
+	// 	printf("the trace file can't open\n");
+	// 	return NULL;
+	// }
+
+	if((err=fopen_s(&(ssd->tracefile),ssd->tracefilename,"r")) != 0 )      /*打开trace文件从中读取请求*/
+	{
 		printf("the trace file can't open\n");
 		return NULL;
 	}
+
 
 	fprintf(ssd->outputfile,"      arrive           lsn     size ope     begin time    response time    process time\n");	
 	fflush(ssd->outputfile);
@@ -135,8 +142,8 @@ struct ssd_info *simulate(struct ssd_info *ssd)
 		trace_output(ssd);
 		t++;
 		// printf("t = %d\n",t);
-		// if(t == 8233){
-		// 	printf("debug bug here,t is %d \n",t);
+		// if(t == 11){
+		// 	printf("debug bug here,t is %d \n",t+5);
 		// }
 		if(flag == 0 && ssd->request_queue == NULL)
 			flag = 100;
@@ -177,12 +184,15 @@ int get_requests(struct ssd_info *ssd)
 	if(feof(ssd->tracefile)){
 		return 100; 
 	}
+	
 
 
 	filepoint = ftell(ssd->tracefile);	
 	fgets(buffer, 200, ssd->tracefile); 
 	sscanf(buffer,"%I64u %d %d %d %d",&time_t,&device,&lsn,&size,&ope);
-    
+	// sscanf(buffer,"%d %d %d %d %I64U",&device,&lsn,&size,&ope,&time_t);
+    // size = size / 500;
+	
 	if ((device<0)&&(lsn<0)&&(size<0)&&(ope<0))
 	{
 		return 100;
@@ -269,6 +279,11 @@ int get_requests(struct ssd_info *ssd)
 	request1->need_distr_flag = NULL;
 	request1->complete_lsn_count=0;         //record the count of lsn served by buffer
 	filepoint = ftell(ssd->tracefile);		// set the file point
+	if(ope == 0){
+		ssd->write+=size;
+	}else{
+		ssd->read+=size;
+	}
 
 	if(ssd->request_queue == NULL)          //The queue is empty
 	{
@@ -297,7 +312,8 @@ int get_requests(struct ssd_info *ssd)
 	filepoint = ftell(ssd->tracefile);	
 	// fgets函数用来从ssd->tracefile文件中读取200字节的数据到buffer中
 	fgets(buffer, 200, ssd->tracefile);    //寻找下一条请求的到达时间，但貌似没有用到
-	sscanf(buffer,"%I64u %d %d %d %d",&time_t,&device,&lsn,&size,&ope);
+	sscanf(buffer,"%d,%d,%d,%d,%I64U",&device,&lsn,&size,&ope,&time_t);
+	size = size / 500;
 	// 这里还存储了ssd下一个请求的时间，没有用到
 	ssd->next_request_time=time_t;
 	// 把ssd->tracefile文件读写位置指针从文件0偏移量处后移filepoint个字节
@@ -340,6 +356,11 @@ struct ssd_info *buffer_management_new(struct ssd_info *ssd){
 
 	if(new_request->operation == WRITE){
 		while(lpn <= last_lpn){
+			srand(time(NULL));
+			int random = rand() % 10;
+			ssd->dram->map->map_entry[lpn].read_count = random;
+			random = rand() % 10;
+			ssd->dram->map->map_entry[lpn].prog_count = random;
 			// 初始化四个扇区都需要进行分发
 			need_distb_flag=full_page;
 			mask=~(0xffffffff<<(ssd->parameter->subpage_page));
@@ -364,6 +385,11 @@ struct ssd_info *buffer_management_new(struct ssd_info *ssd){
 		}
 	}else if(new_request->operation == READ){
 		while(lpn <= last_lpn){
+			srand(time(NULL));
+			int random = rand() % 10;
+			ssd->dram->map->map_entry[lpn].read_count = random;
+			random = rand() % 10;
+			ssd->dram->map->map_entry[lpn].prog_count = random;
 			/************************************************************************************************
 			 *need_distb_flag表示是否需要执行distribution函数，1表示需要执行，buffer中没有，0表示不需要执行
              *即1表示需要分发，0表示不需要分发，对应点初始全部赋为1
@@ -376,7 +402,8 @@ struct ssd_info *buffer_management_new(struct ssd_info *ssd){
 			{        
 				// 增加当前lpn被读的次数,这个读次数是根据记录每个扇区的读次数
 				if(update == 0){
-					buffer_node->read_count++;  
+					buffer_node->read_count++; 
+					ssd->dram->map->map_entry[lpn].read_count++; 
 				}
 				   	
 				lsn_flag=full_page;
@@ -995,6 +1022,10 @@ void trace_output(struct ssd_info* ssd){
 					ssd->write_request_count++;
 					ssd->write_avg=ssd->write_avg+(end_time-req->time);
 				}
+				long long time = end_time - req->time;
+				if(time > ssd->tail_latency){
+					ssd->tail_latency = time;
+				} 
 
 				while(req->subs!=NULL)
 				{
@@ -1112,8 +1143,9 @@ void statistic_output(struct ssd_info *ssd)
 	fprintf(ssd->outputfile,"---------------------------statistic data---------------------------\n");	 
 	fprintf(ssd->outputfile,"min lsn: %13d\n",ssd->min_lsn);	
 	fprintf(ssd->outputfile,"max lsn: %13d\n",ssd->max_lsn);
-	fprintf(ssd->outputfile,"read count: %13d\n",ssd->read_count);	  
-	fprintf(ssd->outputfile,"program count: %13d",ssd->program_count);	
+	fprintf(ssd->outputfile,"read count: %13d\n",ssd->read);	  
+	fprintf(ssd->outputfile,"program count: %13d\n",ssd->write);	
+	fprintf(ssd->outputfile,"read eate: %f",(float)ssd->read /(ssd->write+ssd->read));	
 	fprintf(ssd->outputfile,"                        include the flash write count leaded by read requests\n");
 	fprintf(ssd->outputfile,"the read operation leaded by un-covered update count: %13d\n",ssd->update_read_count);
 	fprintf(ssd->outputfile,"erase count: %13d\n",ssd->erase_count);
@@ -1134,8 +1166,10 @@ void statistic_output(struct ssd_info *ssd)
 	fprintf(ssd->outputfile,"write request count: %13d\n",ssd->write_request_count);
 	fprintf(ssd->outputfile,"read request average size: %13f\n",ssd->ave_read_size);
 	fprintf(ssd->outputfile,"write request average size: %13f\n",ssd->ave_write_size);
-	fprintf(ssd->outputfile,"read request average response time(not include buffer time): %16I64u\n",ssd->read_avg/ssd->read_request_count);
-	fprintf(ssd->outputfile,"write request average response time(not include buffer time): %16I64u\n",ssd->write_avg/ssd->write_request_count);
+	fprintf(ssd->outputfile,"read request average response time(not include buffer time): %16I64u\n",ssd->read_avg/ssd->read);
+	fprintf(ssd->outputfile,"write request average response time(not include buffer time): %16I64u\n",ssd->write_avg/ssd->write);
+	fprintf(ssd->outputfile,"overall request average response time(not include buffer time): %16I64u\n",(ssd->write_avg + ssd->read_avg)/(ssd->write + ssd->read));
+	fprintf(ssd->outputfile,"tail latency is: %16I64u\n",ssd->tail_latency);
 	fprintf(ssd->outputfile,"buffer read hits: %13d\n",ssd->dram->buffer->read_hit);
 	fprintf(ssd->outputfile,"buffer read miss: %13d\n",ssd->dram->buffer->read_miss_hit);
 	fprintf(ssd->outputfile,"buffer write hits: %13d\n",ssd->dram->buffer->write_hit);
@@ -1174,8 +1208,11 @@ void statistic_output(struct ssd_info *ssd)
 	fprintf(ssd->statisticfile,"write request count: %13d\n",ssd->write_request_count);
 	fprintf(ssd->statisticfile,"read request average size: %13f\n",ssd->ave_read_size);
 	fprintf(ssd->statisticfile,"write request average size: %13f\n",ssd->ave_write_size);
-	fprintf(ssd->statisticfile,"read request average response time: %16I64u\n",ssd->read_avg/ssd->read_request_count);
-	fprintf(ssd->statisticfile,"write request average response time: %16I64u\n",ssd->write_avg/ssd->write_request_count);
+	fprintf(ssd->statisticfile,"read request average response time: %16I64u\n",ssd->read_avg/ssd->read_count);
+	fprintf(ssd->statisticfile,"write request average response time: %16I64u\n",ssd->write_avg/ssd->program_count);
+	fprintf(ssd->statisticfile,"write request overall response time: %16I64u\n",ssd->write_avg);
+	fprintf(ssd->statisticfile,"overall request average response time(not include buffer time): %16I64u\n",(ssd->write_avg + ssd->read_avg)/(ssd->program_count + ssd->read_count));
+	fprintf(ssd->statisticfile,"tail latency is: %16I64u\n",ssd->tail_latency);
 	fprintf(ssd->statisticfile,"buffer read hits: %13d\n",ssd->dram->buffer->read_hit);
 	fprintf(ssd->statisticfile,"buffer read miss: %13d\n",ssd->dram->buffer->read_miss_hit);
 	fprintf(ssd->statisticfile,"buffer write hits: %13d\n",ssd->dram->buffer->write_hit);

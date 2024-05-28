@@ -117,6 +117,7 @@ Status allocate_location(struct ssd_info * ssd ,struct sub_request *sub_req)
 		{
 			ssd->read_count++;
 			ssd->update_read_count++;
+			ssd->dram->map->map_entry[sub_req->lpn].read_count++;
 
 			update=(struct sub_request *)malloc(sizeof(struct sub_request));
 			alloc_assert(update,"update");
@@ -820,6 +821,24 @@ Status  find_active_block_new(struct ssd_info *ssd,unsigned int channel,unsigned
 			// }
 			ssd->channel_head[channel].chip_head[chip].die_head[die].plane_head[plane].free_blocknum--;
 			ssd->channel_head[channel].chip_head[chip].die_head[die].plane_head[plane].blk_head[active_block].program_scheme = scheme;
+			if(ssd->channel_head[channel].chip_head[chip].die_head[die].plane_head[plane].free_blocknum==0){
+				struct gc_operation *gc_node=(struct gc_operation *)malloc(sizeof(struct gc_operation));
+				alloc_assert(gc_node,"gc_node");
+				memset(gc_node,0, sizeof(struct gc_operation));
+
+				gc_node->next_node=NULL;
+				gc_node->chip=chip;
+				gc_node->die=die;
+				gc_node->plane=plane;
+				gc_node->block=0xffffffff;
+				gc_node->page=0;
+				gc_node->state=GC_WAIT;
+				gc_node->priority=GC_UNINTERRUPT;
+				gc_node->next_node=ssd->channel_head[channel].gc_command;
+				ssd->channel_head[channel].gc_command=gc_node;
+				ssd->gc_request++;
+				// gc(ssd,channel,0);
+			}
 		}
 
 		
@@ -909,7 +928,7 @@ Status write_page(struct ssd_info *ssd,unsigned int channel,unsigned int chip,un
 	return SUCCESS;
 }
 
-void typeofdata_new(int rc,int pc,int* page_type){
+void typeofdata_new(struct ssd_info* ssd ,unsigned int lpn,int* page_type){
 	
 	// if(pc > HOT_PROG) {
 	// 	*page_type = HOTPROG;
@@ -920,6 +939,8 @@ void typeofdata_new(int rc,int pc,int* page_type){
 	// }else{
 	// 	*page_type = COLD;
 	// }
+	int pc = ssd->dram->map->map_entry[lpn].prog_count;
+	int rc = ssd->dram->map->map_entry[lpn].read_count;
 	
 	if(pc > HOT_PROG){
 		if(rc > HOT_READ) *page_type = HPHR;
@@ -1083,7 +1104,7 @@ struct sub_request * creat_sub_request(struct ssd_info * ssd,unsigned int lpn,in
 	else if(operation == WRITE)
 	{   
 		// 根据该缓存节点的读写次数分配到具体的bit执行编程操作，并且在这里赋值读写次数
-		typeofdata_new(rc,pc,&(sub->page_type)); 
+		typeofdata_new(ssd,lpn,&(sub->page_type)); 
 		sub->prog_count = pc;
 		sub->read_count = rc;                
 		sub->ppn=0;
@@ -1652,10 +1673,10 @@ unsigned int flush2flash(struct sub_request* sub){
 		case LSB_PAGE:
 		case CSB_PAGE:
 		//TODO：后面修改
-			return 161;	
+			return 80;	
 		case MSB_PAGE:
 		case TSB_PAGE:
-			return 215;
+			return 100;
 		default:
 			break;
 		}
@@ -1779,6 +1800,7 @@ Status static_write(struct ssd_info * ssd, unsigned int channel,unsigned int chi
 			// 其中一个或者两个都产生read modify write操作，时间计算改变，并且需要修改ssd的读次数和更新读次数
 			ssd->read_count++;
 			ssd->update_read_count++;
+			ssd->dram->map->map_entry[sub->lpn].read_count++;
 			// 这里的时间计算为命令地址传输时间 + 读前两页数据到data register的时间 + 将data register的数据读出到buffer的时间 + 将数据写入到data register的时间 + 将数据刷新到flash的时间
 			sub->next_state_predict_time = ssd->current_time+7*ssd->parameter->time_characteristics.tWC+(ssd->dram->map->map_entry[sub->lpn].read_times) * ssd->parameter->time_characteristics.tR+(size((ssd->dram->map->map_entry[sub->lpn].state^sub->state)))*ssd->parameter->time_characteristics.tRC+((sub->size)*ssd->parameter->subpage_capacity)*ssd->parameter->time_characteristics.tWC;
 		}
@@ -4076,7 +4098,7 @@ Status go_one_step(struct ssd_info * ssd, struct sub_request * sub1,struct sub_r
 
 				ssd->channel_head[location->channel].chip_head[location->chip].die_head[location->die].plane_head[location->plane].add_reg_ppn=sub->ppn;
 				ssd->read_count++;
-
+				ssd->dram->map->map_entry[sub->lpn].read_count++;
 				ssd->channel_head[location->channel].current_state=CHANNEL_C_A_TRANSFER;									
 				ssd->channel_head[location->channel].current_time=ssd->current_time;										
 				ssd->channel_head[location->channel].next_state=CHANNEL_IDLE;								
@@ -4178,7 +4200,7 @@ Status go_one_step(struct ssd_info * ssd, struct sub_request * sub1,struct sub_r
 
 				ssd->channel_head[sub_twoplane_one->location->channel].chip_head[sub_twoplane_one->location->chip].die_head[sub_twoplane_one->location->die].plane_head[sub_twoplane_one->location->plane].add_reg_ppn=sub_twoplane_one->ppn;
 				ssd->read_count++;
-
+				ssd->dram->map->map_entry[sub->lpn].read_count++;
 				sub_twoplane_two->current_time=ssd->current_time;									
 				sub_twoplane_two->current_state=SR_R_C_A_TRANSFER;									
 				sub_twoplane_two->next_state=SR_R_READ;									
@@ -4188,7 +4210,7 @@ Status go_one_step(struct ssd_info * ssd, struct sub_request * sub1,struct sub_r
 				ssd->channel_head[sub_twoplane_two->location->channel].chip_head[sub_twoplane_two->location->chip].die_head[sub_twoplane_two->location->die].plane_head[sub_twoplane_two->location->plane].add_reg_ppn=sub_twoplane_two->ppn;
 				ssd->read_count++;
 				ssd->m_plane_read_count++;
-
+				ssd->dram->map->map_entry[sub->lpn].read_count++;
 				ssd->channel_head[location->channel].current_state=CHANNEL_C_A_TRANSFER;									
 				ssd->channel_head[location->channel].current_time=ssd->current_time;										
 				ssd->channel_head[location->channel].next_state=CHANNEL_IDLE;								
@@ -4255,7 +4277,7 @@ Status go_one_step(struct ssd_info * ssd, struct sub_request * sub1,struct sub_r
 
 				ssd->channel_head[sub_interleave_one->location->channel].chip_head[sub_interleave_one->location->chip].die_head[sub_interleave_one->location->die].plane_head[sub_interleave_one->location->plane].add_reg_ppn=sub_interleave_one->ppn;
 				ssd->read_count++;
-
+				ssd->dram->map->map_entry[sub->lpn].read_count++;
 				sub_interleave_two->current_time=ssd->current_time;									
 				sub_interleave_two->current_state=SR_R_C_A_TRANSFER;									
 				sub_interleave_two->next_state=SR_R_READ;									

@@ -31,9 +31,9 @@ page number = 64;
 subpage page = 4;
 page capacity = 2048;
 subpage capacity = 512;
-t_PROG = 200000;             #the unit is ns
+t_PROG = 200;             #the unit is ns
 t_DBSY = 50;
-t_BERS = 1500000;
+t_BERS = 150;
 t_CLS = 12;
 t_CLH = 5;
 t_CS = 20;
@@ -46,7 +46,7 @@ t_DH = 5;
 t_WC = 25;
 t_WH = 10;
 t_ADL = 70;
-t_R = 20000;
+t_R = 200;
 t_AR = 10;
 t_CLR = 10;
 t_RR = 20;
@@ -64,7 +64,7 @@ t_REH = 10;
 t_IR = 0;
 t_RHW = 100;
 t_WHR = 60;
-t_RST = 5000;
+t_RST = 500;
 erase limit=100000;                          #record the erasure number of block
 flash operating current=25000.0;               #unit is uA
 flash supply voltage=3.3;                    #voltage is 3.3V	
@@ -101,11 +101,11 @@ the 1 channel, 1 chip, 1 die, 2048 plane has :             0 erase operations
 
 
 ---------------------------statistic data---------------------------
-min lsn:             4
+min lsn:           132
 max lsn:       1002411
-read count:         15735
-program count:         25936                        include the flash write count leaded by read requests
-the read operation leaded by un-covered update count:          1515
+read count:         15752
+program count:          6461                        include the flash write count leaded by read requests
+the read operation leaded by un-covered update count:          1516
 erase count:             0
 direct erase count:             0
 copy back count:             0
@@ -116,19 +116,22 @@ interleave read count:             0
 interleave two plane and one program count:             0
 interleave two plane count:             0
 gc copy back count:             0
-write flash count:         19476
+write flash count:         19480
 waste page count:             0
 interleave erase count:             0
 multiple plane erase count:             0
 interleave multiple plane erase count:             0
 read request count:          4077
-write request count:          5925
-read request average size:     12.187936
-write request average size:      9.836668
-read request average response time:           205417
-write request average response time:           483381
+write request count:          5922
+read request average size:     12.187196
+write request average size:      9.841747
+read request average response time:            50385
+write request average response time:           122347
+write request overall response time:        790486520
+overall request average response time(not include buffer time):            71316
+tail latency is:          1892510
 buffer read hits:          1126
 buffer read miss:           123
-buffer write hits:         14431
-buffer write miss:         32651
+buffer write hits:         14408
+buffer write miss:         32681
 erase:             0

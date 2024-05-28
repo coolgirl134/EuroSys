@@ -206,9 +206,10 @@ struct ssd_info *pre_process_page(struct ssd_info *ssd)
 	while(fgets(buffer_request,200,ssd->tracefile))
 	{
 		sscanf_s(buffer_request,"%I64u %d %d %d %d",&time,&device,&lsn,&size,&ope);
+		// sscanf_s(buffer_request,"%d %d %d %d %I64U",&device,&lsn,&size,&ope,&time);
 		fl++;
 		trace_assert(time,device,lsn,size,ope);                         /*断言，当读到的time，device，lsn，size，ope不合法时就会处理*/
-
+		// size = size/500;
 		add_size=0;                                                     /*add_size是这个请求已经预处理的大小*/
 
 		if(ope==1)                                                      /*这里只是读请求的预处理，需要提前将相应位置的信息进行相应修改*/
@@ -248,9 +249,9 @@ struct ssd_info *pre_process_page(struct ssd_info *ssd)
 						printf("not okk\n");
 						printf("try is %d and ppn is %d\n",try,ppn);
 					}
-					ssd->program_count++;	
-					ssd->channel_head[location->channel].program_count++;
-					ssd->channel_head[location->channel].chip_head[location->chip].program_count++;		
+					// ssd->program_count++;	
+					// ssd->channel_head[location->channel].program_count++;
+					// ssd->channel_head[location->channel].chip_head[location->chip].program_count++;		
 					ssd->dram->map->map_entry[lpn].pn=ppn;	
 					ssd->dram->map->map_entry[lpn].state=set_entry_state(ssd,lsn,sub_size);   //0001
 					ssd->channel_head[location->channel].chip_head[location->chip].die_head[location->die].plane_head[location->plane].blk_head[location->block].page_head[location->page].lpn=lpn;
@@ -571,9 +572,9 @@ struct ssd_info *get_ppn_new(struct ssd_info *ssd,struct sub_request *sub1)
 	ppn1 = find_ppn(ssd,channel,chip,die,plane,block,page1);
 	struct local* loc1 = find_location(ssd,ppn1);
 	ssd->dram->map->map_entry[lpn1].pn = ppn1;
-	if(page1 != loc1->page){
-		printf("page1 is %d location->page is %d\n",page1,loc1->page);
-	}
+	// if(page1 != loc1->page){
+	// 	printf("page1 is %d location->page is %d\n",page1,loc1->page);
+	// }
 	ssd->channel_head[channel].chip_head[chip].die_head[die].plane_head[plane].blk_head[block].page_head[loc1->page].lpn = lpn1;
 	// 记录每个页的读写次数
 	ssd->channel_head[channel].chip_head[chip].die_head[die].plane_head[plane].blk_head[block].page_head[loc1->page].read_count = sub1->read_count;
@@ -620,7 +621,7 @@ struct ssd_info *get_ppn_new(struct ssd_info *ssd,struct sub_request *sub1)
 
 	modify_sub(ssd,sub1,lpn1,channel,chip,die,plane,active_block,loc1->page);
 
-	ssd->program_count++;                                                           /*修改ssd的program_count,free_page等变量*/
+	// ssd->program_count++;                                                           /*修改ssd的program_count,free_page等变量*/
 	ssd->channel_head[channel].program_count++;
 	ssd->channel_head[channel].chip_head[chip].program_count++;
 	ssd->channel_head[channel].chip_head[chip].die_head[die].plane_head[plane].free_page--;
@@ -1397,6 +1398,9 @@ Status move_page_new(struct ssd_info * ssd, struct local *location, unsigned int
 	return SUCCESS;
 
 }
+int uniterrupt_gc_new(struct ssd_info *ssd,unsigned int channel,unsigned int chip,unsigned int die,unsigned int plane){
+	
+}
 
 /*******************************************************************************************************************************************
 *目标的plane没有可以直接删除的block，需要寻找目标擦除块后在实施擦除操作，用在不能中断的gc操作中，成功删除一个块，返回1，没有删除一个块返回-1
@@ -1464,7 +1468,7 @@ int uninterrupt_gc(struct ssd_info *ssd,unsigned int channel,unsigned int chip,u
 			alloc_assert(location,"location");
 			memset(location,0, sizeof(struct local));
 			int type,scheme;
-			typeofdata_new(ssd->channel_head[channel].chip_head[chip].die_head[die].plane_head[plane].blk_head[block].page_head[i].read_count,ssd->channel_head[channel].chip_head[chip].die_head[die].plane_head[plane].blk_head[block].page_head[i].written_count,&type);
+			// typeofdata_new(ssd->dram->map->map_entry[]);
 			location->channel=channel;
 			location->chip=chip;
 			location->die=die;
